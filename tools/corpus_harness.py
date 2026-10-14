@@ -61,7 +61,14 @@ def run_checker(bin_path, hy_path, report_managed=False):
     cmd = [bin_path, "check", hy_path, "--json"]
     if report_managed:
         cmd.append("--report-managed")
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"checker failed for {hy_path}: {e}") from e
+    if proc.returncode not in (0, 1):
+        raise RuntimeError(
+            f"checker failed for {hy_path} (exit {proc.returncode}): {proc.stderr[:400]}"
+        )
     out = proc.stdout.strip()
     if not out:
         raise RuntimeError(
@@ -71,7 +78,35 @@ def run_checker(bin_path, hy_path, report_managed=False):
         payload = json.loads(out)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"checker JSON invalid for {hy_path}: {e}: {out[:400]}")
-    return payload.get("summary", {}), payload.get("diagnostics", [])
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"checker JSON envelope invalid for {hy_path}: expected an object")
+    summary = payload.get("summary")
+    diags = payload.get("diagnostics")
+    if not isinstance(summary, dict) or not isinstance(diags, list) or any(
+        not isinstance(d, dict) for d in diags
+    ):
+        raise RuntimeError(f"checker JSON envelope invalid for {hy_path}: summary/diagnostics")
+
+    verdict = summary.get("verdict")
+    errors = sum(d.get("severity") == "error" for d in diags)
+    warnings = sum(d.get("severity") == "warning" for d in diags)
+    # A rule-less parse error must never look like a clean accept. Validate
+    # the process status and the whole diagnostic list before comparing the
+    # first error's rule with the registered verdict.
+    if verdict not in ("accept", "reject") or any(
+        type(summary.get(field)) is not int or summary[field] != count
+        for field, count in (("errors", errors), ("warnings", warnings))
+    ):
+        raise RuntimeError(f"checker summary inconsistent for {hy_path}: verdict/counts")
+    if (verdict == "accept") != (errors == 0):
+        raise RuntimeError(f"checker summary inconsistent for {hy_path}: verdict/errors")
+    expected_exit = 0 if verdict == "accept" else 1
+    if proc.returncode != expected_exit:
+        raise RuntimeError(
+            f"checker exit inconsistent for {hy_path}: {verdict} expects {expected_exit}, "
+            f"got {proc.returncode}"
+        )
+    return summary, diags
 
 
 def classify_got(summary, diags):
@@ -160,6 +195,10 @@ def main():
                 for d in diags[:6]
             )
         rows.append((fname, expected, got[:2], ok, detail))
+
+    if not total:
+        print(f"error: no registered EXPECTED-VERDICT cases in {args.corpus}", file=sys.stderr)
+        return 2
 
     # ---- report ----
     print(f"{'program':<46} {'expected':<28} {'got':<28} {'ok':<4}")
