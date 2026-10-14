@@ -39,6 +39,7 @@ check:
 	@$(MAKE) -n examples >/dev/null 2>&1 || { echo "MAKE SYNTAX BROKEN (recipes must be TAB-indented)"; exit 1; }
 	@echo "make-syntax OK"
 	@$(PY) -m py_compile tools/runner/runner.py tools/job.py worker/script.py tools/corpus_harness.py tools/differential_loop.py && echo "py-syntax OK"
+	@$(PY) -m unittest discover -s tools -p 'test_corpus_harness.py'
 	@bash tools/check-versions.sh --no-toolchain && echo "versions OK"
 	@cd /tmp && rm -rf gh-selftest && mkdir gh-selftest && cd gh-selftest && \
 	printf '%s\n' '{"job":"selftest","tier":"sandbox","sha":"none","repo":"none","gpu":false,"setup":[],"commands":[{"name":"echo","run":"echo selftest-ok","timeout":30}],"expected_results":[]}' > job.json && \
